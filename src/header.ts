@@ -1,11 +1,11 @@
 import { Buffer } from 'node:buffer'
 
 // TODO(lwvemike): remove before release
-function todo(message: string) {
+export function todo(message: string) {
   throw new Error(`TODO: ${message}`)
 }
 
-interface Versions {
+export interface Versions {
   majorVersion: MajorVersion
   minorVersion: MinorVersion
 }
@@ -116,16 +116,21 @@ function validateHeader({ majorVersion, minorVersion, flags, type, length, seqNo
   }
 }
 
-type HeaderRecord =
+export type HeaderRecord =
   & BaseHeaderRecord
   & Record<'isEncrypted' | 'isSingleConnection', boolean>
+
+interface HeaderDecodeReturn {
+  header: HeaderRecord
+  body: Buffer
+}
 
 export class Header {
   /**
    * @throws Error
    * @param raw
    */
-  static decode(raw: Buffer): HeaderRecord {
+  static decode(raw: Buffer): HeaderDecodeReturn {
     if (raw.length !== Header.SIZE) {
       throw new Error(`Header size must be ${Header.SIZE}, but received ${raw.length}`)
     }
@@ -166,9 +171,12 @@ export class Header {
     })
 
     return {
-      ...header,
-      isEncrypted: !((header.flags & FLAGS.TAC_PLUS_UNENCRYPTED_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
-      isSingleConnection: ((header.flags & FLAGS.TAC_PLUS_SINGLE_CONNECT_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
+      header: {
+        ...header,
+        isEncrypted: !((header.flags & FLAGS.TAC_PLUS_UNENCRYPTED_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
+        isSingleConnection: ((header.flags & FLAGS.TAC_PLUS_SINGLE_CONNECT_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
+      },
+      body: raw.subarray(12, 12 + length),
     }
   }
 
