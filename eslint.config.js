@@ -6,8 +6,6 @@ export default antfu(
     ignores: [
       // eslint ignore globs here
     ],
-  },
-  {
     rules: {
       curly: ['error', 'all'],
     },

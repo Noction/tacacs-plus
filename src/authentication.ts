@@ -1,6 +1,7 @@
-import type { Buffer } from 'node:buffer'
+import { Buffer } from 'node:buffer'
 import type { HeaderRecord } from './header'
-import { isOdd } from './helpers'
+import type { AuthenService, AuthenType, PrivLevel } from './common'
+import { AUTHEN_SERVICE, isAuthenService, isAuthenType, isPrivLevel } from './common'
 
 export const AUTH_START_ACTIONS = {
   TAC_PLUS_AUTHEN_LOGIN: 0x01,
@@ -16,55 +17,12 @@ function isAuthStartAction(maybeAction: number): maybeAction is AuthStartAction 
   return (ALLOWED_AUTH_START_ACTIONS_VALUES as number[]).includes(maybeAction)
 }
 
-// Used privileges
-// interface PrivilegeLevels {
-//   TAC_PLUS_PRIV_LVL_MIN: 0x00
-//   TAC_PLUS_PRIV_LVL_USER: 0x01
-//   TAC_PLUS_PRIV_LVL_ROOT: 0x0F
-//   TAC_PLUS_PRIV_LVL_MAX: 0x0F
-// }
-
-type PrivLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15
-
-function isPrivLevel(maybePrivLevel: number): maybePrivLevel is PrivLevel {
-  return maybePrivLevel > -1 && maybePrivLevel < 16
-}
-
-export const AUTHEN_TYPES = {
-  TAC_PLUS_AUTHEN_TYPE_ASCII: 0x01,
-  TAC_PLUS_AUTHEN_TYPE_PAP: 0x02,
-  TAC_PLUS_AUTHEN_TYPE_CHAP: 0x03,
-  TAC_PLUS_AUTHEN_TYPE_MSCHAP: 0x05,
-  TAC_PLUS_AUTHEN_TYPE_MSCHAPV2: 0x06,
+export const PrivilegeLevels = {
+  TAC_PLUS_PRIV_LVL_MIN: 0x00,
+  TAC_PLUS_PRIV_LVL_USER: 0x01,
+  TAC_PLUS_PRIV_LVL_ROOT: 0x0F,
+  TAC_PLUS_PRIV_LVL_MAX: 0x0F,
 } as const
-
-const ALLOWED_AUTHEN_TYPES = Object.values(AUTHEN_TYPES)
-
-type AuthenType = typeof ALLOWED_AUTHEN_TYPES[number]
-
-function isAuthenType(maybeAuthenType: number): maybeAuthenType is AuthenType {
-  return (ALLOWED_AUTHEN_TYPES as number[]).includes(maybeAuthenType)
-}
-
-export const AUTHEN_SERVICE = {
-  TAC_PLUS_AUTHEN_SVC_NONE: 0x00,
-  TAC_PLUS_AUTHEN_SVC_LOGIN: 0x01,
-  TAC_PLUS_AUTHEN_SVC_ENABLE: 0x02,
-  TAC_PLUS_AUTHEN_SVC_PPP: 0x03,
-  TAC_PLUS_AUTHEN_SVC_PT: 0x05,
-  TAC_PLUS_AUTHEN_SVC_RCMD: 0x06,
-  TAC_PLUS_AUTHEN_SVC_X25: 0x07,
-  TAC_PLUS_AUTHEN_SVC_NASI: 0x08,
-  TAC_PLUS_AUTHEN_SVC_FWPROXY: 0x09,
-} as const
-
-const ALLOWED_AUTHEN_SERVICE = Object.values(AUTHEN_SERVICE)
-
-type AuthenService = typeof ALLOWED_AUTHEN_SERVICE[number]
-
-function isAuthenService(maybeAuthenService: number): maybeAuthenService is AuthenService {
-  return (ALLOWED_AUTHEN_SERVICE as number[]).includes(maybeAuthenService)
-}
 
 interface AuthStartRecord {
   action: AuthStartAction
@@ -132,6 +90,7 @@ function isStatus(maybeStatus: number): maybeStatus is Status {
 }
 
 export const AUTH_REPLY_FLAGS = {
+  TAC_PLUS_REPLY_NO_ACTION: 0x00,
   TAC_PLUS_REPLY_FLAG_NOECHO: 0x01,
 } as const
 
@@ -203,6 +162,26 @@ function validateAuthContinue({ userMessageLength, dataLength, flags }: UnknownA
     dataLength,
     flags,
   }
+}
+
+interface CreateAuthStartArgs {
+  action: AuthStartAction
+  privLvl?: PrivLevel
+  authenType: AuthenType
+  authenService: AuthenService
+  username: string
+  port?: string
+  remAddr?: string
+  data?: Buffer
+}
+
+const TAC_PLUS_VIRTUAL_PORT = ''
+const TAC_PLUS_VIRTUAL_REM_ADDR = ''
+
+interface CreateAuthContinueArgs {
+  password: string
+  flags: number
+  data?: Buffer
 }
 
 export class Authentication {
@@ -330,18 +309,80 @@ export class Authentication {
     }
   }
 
-  static handleAuthentication(data: Buffer, header: HeaderRecord) {
-    const shouldAuthContinue = isOdd(header.seqNo)
+  static createAuthStart(options: CreateAuthStartArgs) {
+    const username = options.username
+    const action = AUTH_START_ACTIONS.TAC_PLUS_AUTHEN_LOGIN
+    const privLvl = options.privLvl ?? PrivilegeLevels.TAC_PLUS_PRIV_LVL_MIN
+    const authenType = options.authenType
+    const service = AUTHEN_SERVICE.TAC_PLUS_AUTHEN_SVC_LOGIN
+    const data = options.data ?? Buffer.alloc(0)
+    const remAddr = options.remAddr ?? TAC_PLUS_VIRTUAL_REM_ADDR
+    const port = options.port ?? TAC_PLUS_VIRTUAL_PORT
 
-    if (header.seqNo === 1) {
-      return Authentication.decodeAuthStart(data, header.length)
+    const usernameBuffer = Buffer.from(username)
+    const remAddrBuffer = Buffer.from(remAddr)
+    const portBuffer = Buffer.from(port)
+
+    const header = Buffer.alloc(8)
+    header.writeUInt8(action, 0)
+    header.writeUInt8(privLvl, 1)
+    header.writeUInt8(authenType, 2)
+    header.writeUInt8(service, 3)
+    header.writeUInt8(usernameBuffer.length, 4)
+    header.writeUInt8(portBuffer.length, 5)
+    header.writeUInt8(remAddrBuffer.length, 6)
+    header.writeUInt8(data.length, 7)
+
+    return Buffer.concat([header, usernameBuffer, portBuffer, remAddrBuffer, data])
+  }
+
+  static createAuthContinue(options: any) {
+    options.flags = options.flags ?? 0x00
+    options.userMessage = options.userMessage || null
+    options.data = options.data || null
+
+    const bSize = 2 + 2 + 1 + (options.userMessage ? options.userMessage.length : 0) + (options.data ? options.data.length : 0)
+    let resp = Buffer.alloc(bSize)
+    let offset = 0
+
+    resp.writeInt16BE(options.userMessage ? options.userMessage.length : 0, offset)
+    offset += 2
+    resp.writeInt16BE(options.data ? options.data.length : 0, offset)
+    offset += 2
+
+    resp.writeUInt8(options.flags, offset)
+    offset += 1
+
+    if (options.userMessage) {
+      resp.write(options.userMessage, offset)
+      offset += options.userMessage.length
     }
 
-    if (shouldAuthContinue) {
-      return Authentication.decodeAuthContinue(data, header.length)
+    if (options.data) {
+      if (options.data instanceof Buffer) {
+        resp = Buffer.concat([resp, options.data])
+      }
+
+      else { resp.write(options.data, offset) }
+
+      offset += options.data.length
     }
 
-    return Authentication.decodeAuthReply(data, header.length)
+    return resp
+  }
+
+  static createAuthContinue2(args: CreateAuthContinueArgs) {
+    const password = args.password
+    const data = args.data ?? Buffer.alloc(0)
+    const flags = args.flags ?? 0 // TODO(lwvemike): see why this is needed 0
+
+    const passwordBuffer = Buffer.from(password)
+    const header = Buffer.alloc(5)
+    header.writeUInt16BE(passwordBuffer.length, 0)
+    header.writeUInt16BE(data.length, 2)
+    header.writeUInt8(flags, 4)
+
+    return Buffer.concat([header, passwordBuffer, data])
   }
 
   static readonly START_MIN_LENGTH = 8

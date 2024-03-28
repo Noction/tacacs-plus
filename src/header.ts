@@ -1,9 +1,5 @@
 import { Buffer } from 'node:buffer'
-
-// TODO(lwvemike): remove before release
-export function todo(message: string) {
-  throw new Error(`TODO: ${message}`)
-}
+import { notImplemented } from './utils'
 
 export interface Versions {
   majorVersion: MajorVersion
@@ -29,16 +25,14 @@ export interface UnknownHeader {
   type: number
 }
 
-function createVersionByte({ majorVersion, minorVersion }: Versions) {
+export function createVersionByte({ majorVersion, minorVersion }: Versions) {
   return ((majorVersion & 0xF) << 4) | (minorVersion & 0xF)
 }
 
 export const HEADER_TYPES = {
-  // TODO(lwvemike): maybe is not valid
-  TAC_DEFAULT: 0x00,
-  TAC_PLUS_AUTHEN: 0x01, // Authentication
-  TAC_PLUS_AUTHOR: 0x02, // Authorization
-  TAC_PLUS_ACCT: 0x03, // Accounting
+  TAC_PLUS_AUTHEN: 0x01,
+  TAC_PLUS_AUTHOR: 0x02,
+  TAC_PLUS_ACCT: 0x03,
 } as const
 
 export const ALLOWED_HEADER_TYPES = Object.values(HEADER_TYPES)
@@ -116,21 +110,95 @@ function validateHeader({ majorVersion, minorVersion, flags, type, length, seqNo
   }
 }
 
+export type Secret = string | null
+
 export type HeaderRecord =
   & BaseHeaderRecord
   & Record<'isEncrypted' | 'isSingleConnection', boolean>
 
-interface HeaderDecodeReturn {
-  header: HeaderRecord
-  body: Buffer
-}
-
 export class Header {
+  readonly #majorVersion: HeaderRecord['majorVersion']
+  readonly #minorVersion: HeaderRecord['minorVersion']
+  readonly #type: HeaderType
+  readonly #flags: Flag
+  readonly #seqNo: number
+  readonly #sessionId: number
+  readonly #length: number
+
+  constructor(unknownHeader: UnknownHeader) {
+    const {
+      majorVersion,
+      minorVersion,
+      type,
+      flags,
+      seqNo,
+      sessionId,
+      length,
+    } = validateHeader(unknownHeader)
+
+    this.#majorVersion = majorVersion
+    this.#minorVersion = minorVersion
+    this.#type = type
+    this.#flags = flags
+    this.#seqNo = seqNo
+    this.#sessionId = sessionId
+    this.#length = length
+  }
+
+  get version() {
+    return createVersionByte({
+      majorVersion: this.#majorVersion,
+      minorVersion: this.#minorVersion,
+    })
+  }
+
+  get sessionId() {
+    return this.#sessionId
+  }
+
+  get length() {
+    return this.#length
+  }
+
+  get seqNo() {
+    return this.#seqNo
+  }
+
+  get isEncrypted() {
+    return !((this.#flags & FLAGS.TAC_PLUS_UNENCRYPTED_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG)
+  }
+
+  get isSingleConnection() {
+    return ((this.#flags & FLAGS.TAC_PLUS_SINGLE_CONNECT_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG)
+  }
+
+  get type() {
+    return this.#type
+  }
+
+  toBuffer() {
+    const buffer = Buffer.alloc(Header.SIZE)
+
+    const versionByte = createVersionByte({
+      majorVersion: this.#majorVersion,
+      minorVersion: this.#minorVersion,
+    })
+
+    buffer.writeUInt8(versionByte, 0)
+    buffer.writeUInt8(this.#type, 1)
+    buffer.writeUInt8(this.#seqNo, 2)
+    buffer.writeUInt8(this.#flags, 3)
+    buffer.writeUInt32BE(this.#sessionId, 4)
+    buffer.writeUInt32BE(this.#length, 8)
+
+    return buffer
+  }
+
   /**
    * @throws Error
    * @param raw
    */
-  static decode(raw: Buffer): HeaderDecodeReturn {
+  static decode(raw: Buffer): Header {
     if (raw.length !== Header.SIZE) {
       throw new Error(`Header size must be ${Header.SIZE}, but received ${raw.length}`)
     }
@@ -148,7 +216,7 @@ export class Header {
 
     const seqNo = raw.subarray(offset, 3).readUInt8(0)
     if (seqNo === 255) {
-      todo('SeqNo is 255, you should handle restart the session')
+      notImplemented('SeqNo is 255, you should handle restart the session')
     }
     offset += 1
 
@@ -160,56 +228,34 @@ export class Header {
 
     const length = raw.subarray(offset, 12).readUInt32BE(0)
 
-    const header = validateHeader({
+    return new Header({
       majorVersion,
       minorVersion,
-      flags,
       type,
-      length,
+      flags,
       seqNo,
       sessionId,
+      length,
     })
-
-    return {
-      header: {
-        ...header,
-        isEncrypted: !((header.flags & FLAGS.TAC_PLUS_UNENCRYPTED_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
-        isSingleConnection: ((header.flags & FLAGS.TAC_PLUS_SINGLE_CONNECT_FLAG) === FLAGS.TAC_PLUS_UNENCRYPTED_FLAG),
-      },
-      body: raw.subarray(12, 12 + length),
-    }
   }
 
-  static create(unknownHeader: UnknownHeader = Header.DEFAULT_HEADER): Buffer {
-    const buffer = Buffer.alloc(Header.SIZE)
-
-    const {
-      majorVersion,
-      minorVersion,
-      type,
-      flags,
-      seqNo,
-      sessionId,
-      length,
-    } = validateHeader(unknownHeader)
-
-    const versionByte = createVersionByte({ majorVersion, minorVersion })
-
-    buffer.writeUInt8(versionByte, 0)
-    buffer.writeUInt8(type, 1)
-    buffer.writeUInt8(seqNo, 2)
-    buffer.writeUInt8(flags, 3)
-    buffer.writeUInt32BE(sessionId, 4)
-    buffer.writeUInt32BE(length, 8)
-
-    return buffer
+  toFormatted() {
+    return JSON.stringify({
+      majorVersion: this.#majorVersion,
+      minorVersion: this.#minorVersion,
+      type: this.#type,
+      flags: this.#flags,
+      seqNo: this.#seqNo,
+      sessionId: this.#sessionId,
+      length: this.#length,
+    }, null, 2)
   }
 
   static readonly SIZE = 12
   static readonly DEFAULT_HEADER: BaseHeaderRecord = {
     majorVersion: MAJOR_VERSIONS.TAC_PLUS_MAJOR_VER_DEFAULT,
     minorVersion: MINOR_VERSIONS.TAC_PLUS_MINOR_VER_DEFAULT,
-    type: HEADER_TYPES.TAC_DEFAULT,
+    type: 0,
     seqNo: 0x1,
     flags: FLAGS.TAC_PLUS_UNENCRYPTED_FLAG,
     sessionId: 0x0,
